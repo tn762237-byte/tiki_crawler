@@ -1,0 +1,48 @@
+name: Tiki Daily Crawl
+
+# chạy mỗi ngày lúc 23:00 giờ VN (UTC+7 = 16:00 UTC)
+on:
+  schedule:
+    - cron: "0 16 * * *"
+  workflow_dispatch: {}  # cho phép chạy thủ công
+
+permissions:
+  contents: write  # để commit CSV trở lại repo
+
+jobs:
+  run-crawler:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run crawler
+        env:
+          TZ: "Asia/Bangkok"
+        run: |
+          python crawl_tiki.py
+
+      - name: Commit CSV back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output/*.csv || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "daily: update tiki csv $(date -u +"%Y-%m-%dT%H:%M:%SZ")" || true
+            git push origin HEAD
+          fi
