@@ -29,7 +29,7 @@ CATEGORIES = [
     "https://tiki.vn/giay-dep-nam/c1686",
     "https://tiki.vn/giay-dep-nu/c1703"
 ]
-PER_CATEGORY_LIMIT = 500  # number of products to collect per category
+PER_CATEGORY_LIMIT = 100  # number of products to collect per category
 PAGE_LIMIT = 40  # items per page (Tiki typical); we request limit=40
 DELAY_BETWEEN_REQUESTS = 1.0  # seconds (anti-block)
 OUTPUT_DIR = "output"
