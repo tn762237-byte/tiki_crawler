@@ -23,7 +23,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
     "Accept": "*/*", # Cập nhật: Dùng */*
-    # CÁC HEADERS BẮT BUỘC để tránh lỗi 400, lấy từ Dev Tools:
+    # CÁC HEADERS BẮT BUỘC để tránh lỗi 400:
     "sec-fetch-mode": "cors", 
     "sec-fetch-site": "cross-site",
     "sec-fetch-dest": "empty",
@@ -51,8 +51,7 @@ FIELDS = [
     "primary_category_path","product_reco_score","seller_id","visible_impression_info",
     "badges_v3","has_video"
 ]
-
-# ĐÃ XÓA KHỐI HEADERS TRÙNG LẶP Ở ĐÂY (dòng 86-93 trong code gốc)
+# Khối HEADERS trùng lặp đã được xóa.
 
 # ====== utility functions ======
 
@@ -60,6 +59,12 @@ def extract_category_id(url: str) -> Optional[str]:
     """Extract category id from url like '/c1234'."""
     m = re.search(r"/c(\d+)(?:$|[/?])", url)
     return m.group(1) if m else None
+
+def extract_category_slug(url: str) -> Optional[str]:
+    """Extract category slug/name from url like '.../nha-sach-tiki/c1234' -> 'nha-sach-tiki'"""
+    # Xóa /cID và các tham số sau đó, sau đó lấy phần tử cuối cùng (slug)
+    path = re.sub(r"/c\d+.*", "", url).rstrip('/')
+    return path.split('/')[-1] if path else None
 
 def safe_get_recursive(obj: Any, key: str) -> Any:
     """
@@ -143,8 +148,10 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
     Pattern used: https://tiki.vn/api/personalish/v1/blocks/listings?limit=40&category_id={cat_id}&page={page}
     """
     cat_id = extract_category_id(category_url)
-    if not cat_id:
-        print(f"[WARN] Cannot extract category id from {category_url}")
+    category_slug = extract_category_slug(category_url) # Bổ sung: Lấy slug/tên danh mục
+
+    if not cat_id or not category_slug:
+        print(f"[WARN] Cannot extract category id or slug from {category_url}")
         return []
 
     products = []
@@ -160,9 +167,10 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
             "limit": limit,
             "category_id": cat_id,
             "page": page,
-            # 2. BỔ SUNG: Thêm Query Parameters bị thiếu (thường gây lỗi 400)
+            # 2. BỔ SUNG: Thêm Query Parameters bị thiếu (platform, sort, category slug)
             "platform": "desktop", 
-            "sort": "default"      
+            "sort": "default",
+            "category": category_slug, # Khắc phục lỗi độ dài tham số category
         }
         url = "https://tiki.vn/api/personalish/v1/blocks/listings"
         try:
@@ -171,7 +179,8 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
             
             # 3. SỬA LỖI: Xử lý lỗi 400 và lỗi khác
             if resp.status_code == 400:
-                print(f"[FATAL] HTTP 400 Bad Request for category {cat_id} page {page}. Parameters/Headers are likely incorrect. Stopping category.")
+                print(f"[FATAL] HTTP 400 Bad Request for category {cat_id} page {page}. Content: {resp.text[:100]}")
+                print("--- PARAMETERS/HEADERS ARE LIKELY INCORRECT. STOPPING CATEGORY ---")
                 break # Dừng hẳn danh mục này
             
             if resp.status_code != 200:
@@ -262,8 +271,12 @@ def main():
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     all_rows = []
-    # LƯU Ý: Đảm bảo biến CATEGORIES đã được định nghĩa ở đâu đó trong code của bạn
+    # LƯU Ý: Đảm bảo biến CATEGORIES đã được định nghĩa
     # Ví dụ: CATEGORIES = ["https://tiki.vn/dien-thoai-smartphone/c1795"]
+    if 'CATEGORIES' not in globals():
+        print("[FATAL] Vui lòng định nghĩa biến CATEGORIES (danh sách URL danh mục) trước khi chạy main().")
+        return
+        
     for cat_url in CATEGORIES: 
         print(f"[START] crawling category: {cat_url}")
         prods = fetch_category_products(cat_url, per_category_limit=PER_CATEGORY_LIMIT)
