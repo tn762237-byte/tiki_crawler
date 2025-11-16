@@ -167,17 +167,18 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
             "limit": limit,
             "category_id": cat_id,
             "page": page,
-            # 2. BỔ SUNG: Thêm Query Parameters bị thiếu (platform, sort, category slug)
+            # 2. BỔ SUNG: Thêm Query Parameters bắt buộc
             "platform": "desktop", 
             "sort": "default",
             "category": category_slug, # Khắc phục lỗi độ dài tham số category
+            "urlKey": category_slug,   # BỔ SUNG THAM SỐ CUỐI CÙNG RẤT QUAN TRỌNG
         }
         url = "https://tiki.vn/api/personalish/v1/blocks/listings"
         try:
             # SỬ DỤNG request_headers (có Referer)
             resp = requests.get(url, headers=request_headers, params=params, timeout=30)
             
-            # 3. SỬA LỖI: Xử lý lỗi 400 và lỗi khác
+            # 3. Xử lý lỗi 400
             if resp.status_code == 400:
                 print(f"[FATAL] HTTP 400 Bad Request for category {cat_id} page {page}. Content: {resp.text[:100]}")
                 print("--- PARAMETERS/HEADERS ARE LIKELY INCORRECT. STOPPING CATEGORY ---")
@@ -275,8 +276,10 @@ def main():
     # Ví dụ: CATEGORIES = ["https://tiki.vn/dien-thoai-smartphone/c1795"]
     if 'CATEGORIES' not in globals():
         print("[FATAL] Vui lòng định nghĩa biến CATEGORIES (danh sách URL danh mục) trước khi chạy main().")
-        return
-        
+        # Thêm một list categories mẫu để code có thể chạy (cần được thay đổi bởi người dùng)
+        CATEGORIES = ["https://tiki.vn/nha-sach-tiki/c8322"] 
+        print(f"[INFO] Sử dụng CATEGORIES mặc định: {CATEGORIES}")
+
     for cat_url in CATEGORIES: 
         print(f"[START] crawling category: {cat_url}")
         prods = fetch_category_products(cat_url, per_category_limit=PER_CATEGORY_LIMIT)
