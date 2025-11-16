@@ -22,7 +22,7 @@ HEADERS = {
     "x-tiki-location": "1",
     "x-tiki-appid": "120",
 }
-PER_CATEGORY_LIMIT = 800
+PER_CATEGORY_LIMIT = 50
 PAGE_LIMIT = 40
 DELAY_BETWEEN_REQUESTS = 2.0
 OUTPUT_DIR = "output"
