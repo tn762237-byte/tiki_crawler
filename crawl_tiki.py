@@ -22,7 +22,7 @@ HEADERS = {
     # Dùng User-Agent hiện tại của bạn
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
-    "Accept": "*/*", # Cập nhật: Dùng */*
+    "Accept": "*/*", 
     # CÁC HEADERS BẮT BUỘC để tránh lỗi 400:
     "sec-fetch-mode": "cors", 
     "sec-fetch-site": "cross-site",
@@ -30,6 +30,10 @@ HEADERS = {
     "sec-ch-ua-platform": "\"Windows\"", 
     "Accept-Encoding": "gzip, deflate, br",
     "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+    
+    # 💥 BỔ SUNG: Headers quan trọng cho API Tiki
+    "x-tiki-location": "1", # Định vị (thường là Hồ Chí Minh)
+    "x-tiki-appid": "120",   # Application ID (Web)
     # Referer sẽ được xử lý động trong hàm fetch_category_products
 }
 PER_CATEGORY_LIMIT = 100  # number of products to collect per category
@@ -51,7 +55,6 @@ FIELDS = [
     "primary_category_path","product_reco_score","seller_id","visible_impression_info",
     "badges_v3","has_video"
 ]
-# Khối HEADERS trùng lặp đã được xóa.
 
 # ====== utility functions ======
 
@@ -94,16 +97,13 @@ def get_field(item: Dict[str, Any], field: str) -> Any:
     """
     if field in item:
         return item.get(field)
-    # common nested names
-    # try direct nested places
-    # e.g. seller info often in item.get('seller') or item.get('current_seller')
+    
     fallback = safe_get_recursive(item, field)
     if fallback is not None:
         return fallback
 
     # additional heuristic fallbacks:
     if field == "thumbnail_url":
-        # common keys
         for k in ("thumbnail_url", "thumbnail", "image", "product_thumbnail"):
             v = safe_get_recursive(item, k)
             if v:
@@ -145,10 +145,9 @@ def build_product_row(product_json: Dict[str, Any]) -> Dict[str, Any]:
 def fetch_category_products(category_url: str, per_category_limit: int = PER_CATEGORY_LIMIT) -> List[Dict[str, Any]]:
     """
     Use Tiki listing API to fetch products for a category.
-    Pattern used: https://tiki.vn/api/personalish/v1/blocks/listings?limit=40&category_id={cat_id}&page={page}
     """
     cat_id = extract_category_id(category_url)
-    category_slug = extract_category_slug(category_url) # Bổ sung: Lấy slug/tên danh mục
+    category_slug = extract_category_slug(category_url) 
 
     if not cat_id or not category_slug:
         print(f"[WARN] Cannot extract category id or slug from {category_url}")
@@ -158,7 +157,7 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
     page = 1
     limit = PAGE_LIMIT
     
-    # 1. BỔ SUNG: Chuẩn bị Headers đã bao gồm Referer động
+    # Chuẩn bị Headers đã bao gồm Referer động
     request_headers = HEADERS.copy()
     request_headers['Referer'] = category_url # Gán Referer là URL danh mục hiện tại
 
@@ -167,22 +166,21 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
             "limit": limit,
             "category_id": cat_id,
             "page": page,
-            # 2. BỔ SUNG: Thêm Query Parameters bắt buộc
+            # Query Parameters bắt buộc để tránh lỗi 400
             "platform": "desktop", 
             "sort": "default",
-            "category": category_slug, # Khắc phục lỗi độ dài tham số category
-            "urlKey": category_slug,   # BỔ SUNG THAM SỐ CUỐI CÙNG RẤT QUAN TRỌNG
+            "category": category_slug, 
+            "urlKey": category_slug,   # THAM SỐ QUAN TRỌNG ĐỂ KHẮC PHỤC LỖI LENGTH
         }
         url = "https://tiki.vn/api/personalish/v1/blocks/listings"
         try:
-            # SỬ DỤNG request_headers (có Referer)
             resp = requests.get(url, headers=request_headers, params=params, timeout=30)
             
-            # 3. Xử lý lỗi 400
+            # Xử lý lỗi 400
             if resp.status_code == 400:
                 print(f"[FATAL] HTTP 400 Bad Request for category {cat_id} page {page}. Content: {resp.text[:100]}")
                 print("--- PARAMETERS/HEADERS ARE LIKELY INCORRECT. STOPPING CATEGORY ---")
-                break # Dừng hẳn danh mục này
+                break 
             
             if resp.status_code != 200:
                 print(f"[ERROR] HTTP {resp.status_code} for category {cat_id} page {page} - Retrying after delay...")
@@ -190,31 +188,26 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
                 continue
 
             data = resp.json()
-            # The API returns a structure; products often under data['data'] or data['items'] or data['records']
             block_items = None
+            
+            # Logic trích xuất items từ response (không thay đổi)
             for candidate in ("data", "items", "records", "collection", "products"):
                 if candidate in data and isinstance(data[candidate], (list, dict)):
                     block_items = data[candidate]
                     break
-            # if 'data' is a dict with 'items' inside
             if block_items is None and isinstance(data.get("data"), dict):
                 for c in ("items","data","records"):
                     if c in data["data"]:
                         block_items = data["data"][c]
                         break
-            # if block_items is dict (maybe paged), try extract list from common keys
             if isinstance(block_items, dict):
-                # look for 'items' or 'data'
                 for c in ("items", "data", "records", "products"):
                     if c in block_items and isinstance(block_items[c], list):
                         block_items = block_items[c]
                         break
-
+            
+            # Fallback (tìm list chứa 'id')
             if not block_items:
-                # fallback: try to look recursively for product objects
-                # naive: if 'data' has 'listing' etc
-                # We'll try searching for a list anywhere in the response that has dicts with 'id' key
-                found = None
                 def find_list_with_id(obj):
                     if isinstance(obj, list):
                         if len(obj) > 0 and isinstance(obj[0], dict) and "id" in obj[0]:
@@ -229,22 +222,18 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
                             if res:
                                 return res
                     return None
-                found = find_list_with_id(data)
-                block_items = found
+                block_items = find_list_with_id(data)
+
 
             if not block_items:
                 print(f"[WARN] no items found on category {cat_id} page {page}. Response keys: {list(data.keys())}")
                 break
 
-            # ensure list
             if isinstance(block_items, dict):
                 block_items = [block_items]
 
-            # iterate and append
             for it in block_items:
-                # sometimes the item is a 'product' wrapper
                 prod = it
-                # find inner product if nested
                 if isinstance(it, dict):
                     if "product" in it and isinstance(it["product"], dict):
                         prod = it["product"]
@@ -272,14 +261,19 @@ def main():
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     all_rows = []
-    # LƯU Ý: Đảm bảo biến CATEGORIES đã được định nghĩa
-    # Ví dụ: CATEGORIES = ["https://tiki.vn/dien-thoai-smartphone/c1795"]
-    if 'CATEGORIES' not in globals():
-        print("[FATAL] Vui lòng định nghĩa biến CATEGORIES (danh sách URL danh mục) trước khi chạy main().")
-        # Thêm một list categories mẫu để code có thể chạy (cần được thay đổi bởi người dùng)
-        CATEGORIES = ["https://tiki.vn/nha-sach-tiki/c8322"] 
-        print(f"[INFO] Sử dụng CATEGORIES mặc định: {CATEGORIES}")
-
+    
+    # ⚠️ ĐỊNH NGHĨA CATEGORIES Ở ĐÂY ⚠️
+    # THAY THẾ bằng danh sách URL danh mục bạn muốn crawl.
+    CATEGORIES = [
+        "https://tiki.vn/nha-sach-tiki/c8322", 
+        # Thêm các URL danh mục khác tại đây
+        # Ví dụ: "https://tiki.vn/dien-thoai-smartphone/c1795"
+    ]
+    
+    if not CATEGORIES:
+         print("[FATAL] Danh sách CATEGORIES đang trống. Vui lòng thêm URL danh mục.")
+         return
+        
     for cat_url in CATEGORIES: 
         print(f"[START] crawling category: {cat_url}")
         prods = fetch_category_products(cat_url, per_category_limit=PER_CATEGORY_LIMIT)
