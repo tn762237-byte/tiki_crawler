@@ -12,7 +12,6 @@ import csv
 import re
 import json
 import os
-import uuid  # Thêm để generate trackity_id random
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 # ====== CONFIG ======
@@ -30,7 +29,7 @@ HEADERS = {
     "x-tiki-appid": "120",  # Application ID (Web)
     # Referer sẽ được xử lý động
 }
-PER_CATEGORY_LIMIT = 100  # number of products to collect per category
+PER_CATEGORY_LIMIT = 100  # number of products to collect per category (giảm nếu category lớn để tránh 400)
 PAGE_LIMIT = 40  # items per page (Tiki typical); we request limit=40
 DELAY_BETWEEN_REQUESTS = 1.0  # seconds (anti-block)
 OUTPUT_DIR = "output"
@@ -145,30 +144,25 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
         params = {
             "limit": limit,
             "page": page,
-            # Params sửa để tránh 400: category = ID (số), không phải slug
-            "category": cat_id,  # SỬA: Dùng cat_id (string số)
-            "urlKey": category_slug,  # Giữ slug
-            # Thêm params bắt buộc từ request thực tế
+            # Params theo example working: category = ID, urlKey = slug
+            "category": cat_id,
+            "urlKey": category_slug,
+            # Thêm params từ example
             "include": "advertisement",
-            "aggregations": "1",
-            # Optional: Fake trackity_id (UUID random mỗi request)
-            "trackity_id": str(uuid.uuid4()),
-            # Giữ nếu cần
-            "platform": "desktop",
+            "aggregations": "2",  # Thay 1 bằng 2 theo example
+            # Optional: sort (dùng default, không cần trackity_id để tránh issue)
             "sort": "default",
         }
         url = "https://tiki.vn/api/personalish/v1/blocks/listings"
         try:
-            print(f"[DEBUG] Sending request with params: {params}")  # Thêm debug để check
+            # Print full request URL để debug
+            full_url = requests.Request('GET', url, params=params).prepare().url
+            print(f"[DEBUG] Requesting: {full_url}")
             resp = requests.get(url, headers=request_headers, params=params, timeout=30)
            
-            # Xử lý lỗi 400 chi tiết hơn
+            # Xử lý lỗi 400 (giới hạn page, break luôn)
             if resp.status_code == 400:
-                print(f"[FATAL] HTTP 400 Bad Request for category {cat_id} page {page}.")
-                print(f"Response content: {resp.text}")
-                print(f"Sent params: {params}")
-                print(f"Sent headers: {request_headers}")
-                print("--- PARAMETERS/HEADERS ARE LIKELY INCORRECT. STOPPING CATEGORY ---")
+                print(f"[INFO] HTTP 400 for category {cat_id} page {page} - Likely end of pagination. Stopping category.")
                 break
            
             if resp.status_code != 200:
