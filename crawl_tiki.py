@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-# crawl_tiki.py
-"""
-Crawl products from Tiki category API and save to CSV.
-Uses requests + Tiki API endpoints (no Selenium).
-Delay 1s between page requests, fake User-Agent, retry on failures.
-Collect up to N products per category.
-"""
+# crawl_tiki.py - Updated for historical tracking
 import requests
 import time
 import csv
@@ -14,8 +8,8 @@ import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-# ====== CONFIG ======
-# Fake User-Agent header (common modern browser UA)
+
+# CONFIG
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*",
@@ -25,16 +19,16 @@ HEADERS = {
     "sec-ch-ua-platform": "\"Windows\"",
     "Accept-Encoding": "gzip, deflate, br",
     "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
-    "x-tiki-location": "1",  # Định vị (thường là Hồ Chí Minh)
-    "x-tiki-appid": "120",  # Application ID (Web)
-    # Referer sẽ được xử lý động
+    "x-tiki-location": "1",
+    "x-tiki-appid": "120",
 }
-PER_CATEGORY_LIMIT = 100  # number of products to collect per category (giảm nếu category lớn để tránh 400)
-PAGE_LIMIT = 40  # items per page (Tiki typical); we request limit=40
-DELAY_BETWEEN_REQUESTS = 1.0  # seconds (anti-block)
+PER_CATEGORY_LIMIT = 800  # Giảm để tránh 400 (max ~20 pages x 40)
+PAGE_LIMIT = 40
+DELAY_BETWEEN_REQUESTS = 2.0  # Tăng delay chống block
 OUTPUT_DIR = "output"
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, f"tiki_products_{datetime.now().strftime('%Y%m%d')}.csv")
-# requested fields (order preserved)
+TIMESTAMP = datetime.now().strftime('%Y%m%d_%H%M%S')
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, f"tiki_products_{TIMESTAMP}.csv")
+
 FIELDS = [
     "id","sku","name","url_key","url_path","type","author_name","book_cover","brand_name",
     "short_description","price","list_price","badges","badges_new","discount","discount_rate",
@@ -47,15 +41,18 @@ FIELDS = [
     "primary_category_path","product_reco_score","seller_id","visible_impression_info",
     "badges_v3","has_video"
 ]
-# ====== utility functions ======
+
+# Utility functions
 def extract_category_id(url: str) -> Optional[str]:
     """Extract category id from url like '/c1234'."""
     m = re.search(r"/c(\d+)(?:$|[/?])", url)
     return m.group(1) if m else None
+
 def extract_category_slug(url: str) -> Optional[str]:
     """Extract category slug/name from url like '.../nha-sach-tiki/c1234' -> 'nha-sach-tiki'"""
     path = re.sub(r"/c\d+.*", "", url).rstrip('/')
     return path.split('/')[-1] if path else None
+
 def safe_get_recursive(obj: Any, key: str) -> Any:
     """
     Search for key in nested dict/list structures recursively.
@@ -74,6 +71,7 @@ def safe_get_recursive(obj: Any, key: str) -> Any:
             if found is not None:
                 return found
     return None
+
 def get_field(item: Dict[str, Any], field: str) -> Any:
     """
     Try to get 'field' from item:
@@ -109,6 +107,7 @@ def get_field(item: Dict[str, Any], field: str) -> Any:
         return safe_get_recursive(item, "review_count") or safe_get_recursive(item, "review_total") or safe_get_recursive(item, "reviews")
     # default None
     return None
+
 def build_product_row(product_json: Dict[str, Any]) -> Dict[str, Any]:
     """Map product json to CSV row using FIELDS list."""
     row = {}
@@ -123,7 +122,8 @@ def build_product_row(product_json: Dict[str, Any]) -> Dict[str, Any]:
         else:
             row[f] = val
     return row
-# ====== main crawling logic ======
+
+# Main crawling logic
 def fetch_category_products(category_url: str, per_category_limit: int = PER_CATEGORY_LIMIT) -> List[Dict[str, Any]]:
     """
     Use Tiki listing API to fetch products for a category.
@@ -144,20 +144,17 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
         params = {
             "limit": limit,
             "page": page,
-            # Params theo example working: category = ID, urlKey = slug
             "category": cat_id,
             "urlKey": category_slug,
-            # Thêm params từ example
             "include": "advertisement",
-            "aggregations": "2",  # Thay 1 bằng 2 theo example
-            # Optional: sort (dùng default, không cần trackity_id để tránh issue)
+            "aggregations": "2",
             "sort": "default",
         }
         url = "https://tiki.vn/api/personalish/v1/blocks/listings"
         try:
             # Print full request URL để debug
             full_url = requests.Request('GET', url, params=params).prepare().url
-            print(f"[DEBUG] Requesting: {full_url}")
+            print(f"[DEBUG] Requesting page {page}: {full_url}")
             resp = requests.get(url, headers=request_headers, params=params, timeout=30)
            
             # Xử lý lỗi 400 (giới hạn page, break luôn)
@@ -172,7 +169,7 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
             data = resp.json()
             block_items = None
            
-            # Logic trích xuất items từ response (không thay đổi)
+            # Logic trích xuất items từ response
             for candidate in ("data", "items", "records", "collection", "products"):
                 if candidate in data and isinstance(data[candidate], (list, dict)):
                     block_items = data[candidate]
@@ -230,17 +227,16 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
             page += 1
             continue
     return products[:per_category_limit]
+
 def main():
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR, exist_ok=True)
     all_rows = []
    
-    # ⚠️ ĐỊNH NGHĨA CATEGORIES Ở ĐÂY ⚠️
-    # THAY THẾ bằng danh sách URL danh mục bạn muốn crawl.
+    # ĐỊNH NGHĨA CATEGORIES
     CATEGORIES = [
         "https://tiki.vn/nha-sach-tiki/c8322",
-        # Thêm các URL danh mục khác tại đây
-        # Ví dụ: "https://tiki.vn/dien-thoai-smartphone/c1795"
+        # Thêm các URL danh mục khác
     ]
    
     if not CATEGORIES:
@@ -253,7 +249,6 @@ def main():
         print(f"[DONE] category {cat_url} -> collected {len(prods)} products")
         for p in prods:
             row = build_product_row(p)
-            # also add a source_category field for traceability
             row["_source_category_url"] = cat_url
             all_rows.append(row)
     # Ensure header includes FIELDS + source column
@@ -264,9 +259,9 @@ def main():
         writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
         writer.writeheader()
         for r in all_rows:
-            # ensure all headers exist in row
             out = {h: (r.get(h) if r.get(h) is not None else "") for h in headers}
             writer.writerow(out)
     print("[FIN] crawling finished")
+
 if __name__ == "__main__":
     main()
