@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# crawl_tiki.py - Updated with trackity_id extraction
+# crawl_tiki.py - Updated to stop on error
 import requests
 import time
 import csv
@@ -22,7 +22,7 @@ HEADERS = {
     "x-tiki-location": "1",
     "x-tiki-appid": "120",
 }
-PER_CATEGORY_LIMIT = 800
+PER_CATEGORY_LIMIT = 100000  # Đặt cao để crawl đến khi lỗi, nhưng sẽ dừng khi gặp 400
 PAGE_LIMIT = 40
 DELAY_BETWEEN_REQUESTS = 2.0
 OUTPUT_DIR = "output"
@@ -42,17 +42,22 @@ FIELDS = [
     "badges_v3","has_video"
 ]
 
-# Utility functions (giữ nguyên)
-
+# Utility functions
 def extract_category_id(url: str) -> Optional[str]:
+    """Extract category id from url like '/c1234'."""
     m = re.search(r"/c(\d+)(?:$|[/?])", url)
     return m.group(1) if m else None
 
 def extract_category_slug(url: str) -> Optional[str]:
+    """Extract category slug/name from url like '.../nha-sach-tiki/c1234' -> 'nha-sach-tiki'"""
     path = re.sub(r"/c\d+.*", "", url).rstrip('/')
     return path.split('/')[-1] if path else None
 
 def safe_get_recursive(obj: Any, key: str) -> Any:
+    """
+    Search for key in nested dict/list structures recursively.
+    Return first match or None.
+    """
     if isinstance(obj, dict):
         if key in obj:
             return obj[key]
@@ -68,11 +73,19 @@ def safe_get_recursive(obj: Any, key: str) -> Any:
     return None
 
 def get_field(item: Dict[str, Any], field: str) -> Any:
+    """
+    Try to get 'field' from item:
+    - direct key
+    - nested recursive search
+    - some field-specific fallbacks for common tiki structure
+    """
     if field in item:
         return item.get(field)
+   
     fallback = safe_get_recursive(item, field)
     if fallback is not None:
         return fallback
+    # additional heuristic fallbacks:
     if field == "thumbnail_url":
         for k in ("thumbnail_url", "thumbnail", "image", "product_thumbnail"):
             v = safe_get_recursive(item, k)
@@ -92,12 +105,15 @@ def get_field(item: Dict[str, Any], field: str) -> Any:
         return safe_get_recursive(item, "rating_average") or safe_get_recursive(item, "average_rating") or safe_get_recursive(item, "rating")
     if field == "review_count":
         return safe_get_recursive(item, "review_count") or safe_get_recursive(item, "review_total") or safe_get_recursive(item, "reviews")
+    # default None
     return None
 
 def build_product_row(product_json: Dict[str, Any]) -> Dict[str, Any]:
+    """Map product json to CSV row using FIELDS list."""
     row = {}
     for f in FIELDS:
         val = get_field(product_json, f)
+        # For lists/dicts, dump as JSON string
         if isinstance(val, (dict, list)):
             try:
                 row[f] = json.dumps(val, ensure_ascii=False)
@@ -107,80 +123,61 @@ def build_product_row(product_json: Dict[str, Any]) -> Dict[str, Any]:
             row[f] = val
     return row
 
-# New function to extract trackity_id
-def extract_trackity_id(category_url: str) -> Optional[str]:
-    try:
-        resp = requests.get(category_url, headers=HEADERS, timeout=30)
-        if resp.status_code != 200:
-            print(f"[ERROR] Failed to fetch page for trackity_id: HTTP {resp.status_code}")
-            return None
-        text = resp.text
-        m = re.search(r'trackity_id\s*:\s*"([^"]+)"', text) or re.search(r'"trackity_id":"([^"]+)"', text)
-        if m:
-            return m.group(1)
-        print("[WARN] trackity_id not found in page HTML")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Exception extracting trackity_id: {e}")
-        return None
-
-# Main crawling logic
+# ====== main crawling logic ======
 def fetch_category_products(category_url: str, per_category_limit: int = PER_CATEGORY_LIMIT) -> List[Dict[str, Any]]:
+    """
+    Use Tiki listing API to fetch products for a category.
+    """
     cat_id = extract_category_id(category_url)
     category_slug = extract_category_slug(category_url)
     if not cat_id or not category_slug:
         print(f"[WARN] Cannot extract category id or slug from {category_url}")
         return []
-    # Extract trackity_id
-    trackity_id = extract_trackity_id(category_url)
-    if not trackity_id:
-        print("[FATAL] Cannot extract trackity_id - skipping category")
-        return []
     products = []
     page = 1
     limit = PAGE_LIMIT
+   
+    # Chuẩn bị Headers đã bao gồm Referer động
     request_headers = HEADERS.copy()
-    request_headers['Referer'] = category_url
+    request_headers['Referer'] = category_url # Gán Referer là URL danh mục hiện tại
     while len(products) < per_category_limit:
         params = {
             "limit": limit,
-            "page": page,
-            "category": cat_id,  # Use ID here
-            "urlKey": category_slug,
-            "include": "advertisement",
-            "aggregations": "2",
-            "trackity_id": trackity_id,  # Added required param
-            "sort": "default",
+            "category_id": cat_id,
+            "page": page
         }
         url = "https://tiki.vn/api/personalish/v1/blocks/listings"
         try:
-            full_url = requests.Request('GET', url, params=params).prepare().url
-            print(f"[DEBUG] Requesting page {page}: {full_url}")
             resp = requests.get(url, headers=request_headers, params=params, timeout=30)
-            if resp.status_code == 400:
-                print(f"[INFO] HTTP 400 at page {page}: {resp.text[:200]} - End of pagination or invalid param. Stopping.")
-                break
             if resp.status_code != 200:
-                print(f"[ERROR] HTTP {resp.status_code} at page {page}: {resp.text[:200]} - Retry after delay...")
-                time.sleep(DELAY_BETWEEN_REQUESTS * 2)
-                continue
+                print(f"[ERROR] HTTP {resp.status_code} for category {cat_id} page {page} - content: {resp.text[:200]}")
+                # Dừng luôn khi gặp lỗi (không retry)
+                break
             data = resp.json()
+            # The API returns a structure; products often under data['data'] or data['items'] or data['records']
             block_items = None
             for candidate in ("data", "items", "records", "collection", "products"):
                 if candidate in data and isinstance(data[candidate], (list, dict)):
                     block_items = data[candidate]
                     break
+            # if 'data' is a dict with 'items' inside
             if block_items is None and isinstance(data.get("data"), dict):
                 for c in ("items","data","records"):
                     if c in data["data"]:
                         block_items = data["data"][c]
                         break
+            # if block_items is dict (maybe paged), try extract list from common keys
             if isinstance(block_items, dict):
+                # look for 'items' or 'data'
                 for c in ("items", "data", "records", "products"):
                     if c in block_items and isinstance(block_items[c], list):
                         block_items = block_items[c]
                         break
             if not block_items:
+                # fallback: try to look recursively for product objects
+                # naive: if 'data' has 'listing' etc
+                # We'll try searching for a list anywhere in the response that has dicts with 'id' key
+                found = None
                 def find_list_with_id(obj):
                     if isinstance(obj, list):
                         if len(obj) > 0 and isinstance(obj[0], dict) and "id" in obj[0]:
@@ -195,14 +192,19 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
                             if res:
                                 return res
                     return None
-                block_items = find_list_with_id(data)
+                found = find_list_with_id(data)
+                block_items = found
             if not block_items:
-                print(f"[WARN] no items found on page {page}. Response keys: {list(data.keys())}")
+                print(f"[WARN] no items found on category {cat_id} page {page}. Response keys: {list(data.keys())}")
                 break
+            # ensure list
             if isinstance(block_items, dict):
                 block_items = [block_items]
+            # iterate and append
             for it in block_items:
+                # sometimes the item is a 'product' wrapper
                 prod = it
+                # find inner product if nested
                 if isinstance(it, dict):
                     if "product" in it and isinstance(it["product"], dict):
                         prod = it["product"]
@@ -212,42 +214,39 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
                     products.append(prod)
                 if len(products) >= per_category_limit:
                     break
-            print(f"[INFO] Page {page}: Got {len(block_items)} items; Total: {len(products)}")
+            print(f"[INFO] category {cat_id} page {page} -> got {len(block_items)} items; total collected: {len(products)}")
             page += 1
             time.sleep(DELAY_BETWEEN_REQUESTS)
         except Exception as e:
-            print(f"[ERROR] Exception at page {page}: {e}")
-            time.sleep(5)
-            continue
+            print(f"[ERROR] Exception while fetching category {cat_id} page {page}: {e}")
+            # Dừng luôn khi gặp exception
+            break
     return products[:per_category_limit]
 
 def main():
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR, exist_ok=True)
     all_rows = []
-    CATEGORIES = [
-        "https://tiki.vn/nha-sach-tiki/c8322",
-    ]
-    if not CATEGORIES:
-        print("[FATAL] Danh sách CATEGORIES đang trống. Vui lòng thêm URL danh mục.")
-        return
     for cat_url in CATEGORIES:
         print(f"[START] crawling category: {cat_url}")
         prods = fetch_category_products(cat_url, per_category_limit=PER_CATEGORY_LIMIT)
         print(f"[DONE] category {cat_url} -> collected {len(prods)} products")
         for p in prods:
             row = build_product_row(p)
+            # also add a source_category field for traceability
             row["_source_category_url"] = cat_url
             all_rows.append(row)
+    # Ensure header includes FIELDS + source column
     headers = FIELDS + ["_source_category_url"]
+    # write CSV
     print(f"[WRITE] saving {len(all_rows)} rows to {OUTPUT_FILE}")
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
         writer.writeheader()
         for r in all_rows:
+            # ensure all headers exist in row
             out = {h: (r.get(h) if r.get(h) is not None else "") for h in headers}
             writer.writerow(out)
     print("[FIN] crawling finished")
-
 if __name__ == "__main__":
     main()
