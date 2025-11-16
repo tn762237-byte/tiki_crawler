@@ -17,18 +17,21 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 # ====== CONFIG ======
-CATEGORIES = [
-    "https://tiki.vn/nha-sach-tiki/c8322",
-    "https://tiki.vn/nha-cua-doi-song/c1883",
-    "https://tiki.vn/dien-thoai-may-tinh-bang/c1789",
-    "https://tiki.vn/do-choi-me-be/c2549",
-    "https://tiki.vn/dien-gia-dung/c1882",
-    "https://tiki.vn/lam-dep-suc-khoe/c1520",
-    "https://tiki.vn/thoi-trang-nu/c931",
-    "https://tiki.vn/thoi-trang-nam/c915",
-    "https://tiki.vn/giay-dep-nam/c1686",
-    "https://tiki.vn/giay-dep-nu/c1703"
-]
+# Fake User-Agent header (common modern browser UA)
+HEADERS = {
+    # Dùng User-Agent hiện tại của bạn
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", 
+    "Accept": "*/*", # Cập nhật: Dùng */*
+    # CÁC HEADERS BẮT BUỘC để tránh lỗi 400, lấy từ Dev Tools:
+    "sec-fetch-mode": "cors", 
+    "sec-fetch-site": "cross-site",
+    "sec-fetch-dest": "empty",
+    "sec-ch-ua-platform": "\"Windows\"", 
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+    # Referer sẽ được xử lý động trong hàm fetch_category_products
+}
 PER_CATEGORY_LIMIT = 100  # number of products to collect per category
 PAGE_LIMIT = 40  # items per page (Tiki typical); we request limit=40
 DELAY_BETWEEN_REQUESTS = 1.0  # seconds (anti-block)
@@ -49,12 +52,7 @@ FIELDS = [
     "badges_v3","has_video"
 ]
 
-# Fake User-Agent header (common modern browser UA)
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-}
+# ĐÃ XÓA KHỐI HEADERS TRÙNG LẶP Ở ĐÂY (dòng 86-93 trong code gốc)
 
 # ====== utility functions ======
 
@@ -152,21 +150,33 @@ def fetch_category_products(category_url: str, per_category_limit: int = PER_CAT
     products = []
     page = 1
     limit = PAGE_LIMIT
+    
+    # 1. BỔ SUNG: Chuẩn bị Headers đã bao gồm Referer động
+    request_headers = HEADERS.copy()
+    request_headers['Referer'] = category_url # Gán Referer là URL danh mục hiện tại
 
     while len(products) < per_category_limit:
         params = {
             "limit": limit,
             "category_id": cat_id,
-            "page": page
+            "page": page,
+            # 2. BỔ SUNG: Thêm Query Parameters bị thiếu (thường gây lỗi 400)
+            "platform": "desktop", 
+            "sort": "default"      
         }
         url = "https://tiki.vn/api/personalish/v1/blocks/listings"
         try:
-            resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+            # SỬ DỤNG request_headers (có Referer)
+            resp = requests.get(url, headers=request_headers, params=params, timeout=30)
+            
+            # 3. SỬA LỖI: Xử lý lỗi 400 và lỗi khác
+            if resp.status_code == 400:
+                print(f"[FATAL] HTTP 400 Bad Request for category {cat_id} page {page}. Parameters/Headers are likely incorrect. Stopping category.")
+                break # Dừng hẳn danh mục này
+            
             if resp.status_code != 200:
-                print(f"[ERROR] HTTP {resp.status_code} for category {cat_id} page {page} - content: {resp.text[:200]}")
-                # basic retry/backoff
-                time.sleep(2)
-                page += 1
+                print(f"[ERROR] HTTP {resp.status_code} for category {cat_id} page {page} - Retrying after delay...")
+                time.sleep(DELAY_BETWEEN_REQUESTS * 2) 
                 continue
 
             data = resp.json()
@@ -252,7 +262,9 @@ def main():
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     all_rows = []
-    for cat_url in CATEGORIES:
+    # LƯU Ý: Đảm bảo biến CATEGORIES đã được định nghĩa ở đâu đó trong code của bạn
+    # Ví dụ: CATEGORIES = ["https://tiki.vn/dien-thoai-smartphone/c1795"]
+    for cat_url in CATEGORIES: 
         print(f"[START] crawling category: {cat_url}")
         prods = fetch_category_products(cat_url, per_category_limit=PER_CATEGORY_LIMIT)
         print(f"[DONE] category {cat_url} -> collected {len(prods)} products")
