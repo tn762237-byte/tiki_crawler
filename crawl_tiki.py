@@ -2,8 +2,8 @@ import requests
 import time
 
 CATEGORY_ID = 8322
-TARGET_TOTAL = 50
-LIMIT = 20
+TARGET_TOTAL = 40
+LIMIT = 10
 API_URL = "https://tiki.vn/api/v2/products"
 
 HEADERS = {
@@ -11,7 +11,7 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-def crawl_category(category_id, target_total=50):
+def crawl_category(category_id, target_total=40):
     results = []
     page = 1
 
