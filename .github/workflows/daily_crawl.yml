@@ -1,4 +1,5 @@
 name: Auto Crawl Tiki
+pip install requests
 
 on:
   workflow_dispatch: # Cho phép bấm nút chạy thủ công
