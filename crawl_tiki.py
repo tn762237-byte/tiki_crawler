@@ -1,4 +1,3 @@
-pip install requests
 import requests
 import time
 import csv
